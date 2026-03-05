@@ -1,11 +1,14 @@
 import asyncio
+import os
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from managers.chat_orchestrator import ChatOrchestrator
-from managers.history_manager import HistoryManager
+from managers.memory.chat_orchestrator import ChatOrchestrator
+from managers.memory.history_manager import HistoryManager
+from managers.memory.ingestion import IngestionService, LocalFileStore, MinioFileStore, S3FileStore
+from managers.memory.retrieval import RetrievalService
 from managers.llm_core import LLMEngine
 from managers.model_manager import ModelManager
 from managers.preset_manager import PresetManager
@@ -33,8 +36,23 @@ class AppState:
             tokenizer_fn=self.llm_engine.count_tokens,
         )
 
+        self.retrieval_service = RetrievalService(db_path="data/rag.db")
+
         self.chat_orchestrator = ChatOrchestrator(
-            self.llm_engine, self.history_manager, self.executor
+            self.llm_engine, self.history_manager, self.executor, self.retrieval_service
+        )
+
+        store_backend = os.environ.get("FILE_STORE_BACKEND", "local").lower()
+        if store_backend == "s3":
+            file_store = S3FileStore()
+        elif store_backend == "minio":
+            file_store = MinioFileStore()
+        else:
+            file_store = LocalFileStore("data/uploads")
+
+        self.ingestion_service = IngestionService(
+            retriever=self.retrieval_service,
+            store=file_store,
         )
 
         self.sse_queues: Dict[str, asyncio.Queue] = {}

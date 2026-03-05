@@ -10,6 +10,7 @@ from slowapi.errors import RateLimitExceeded
 
 from api.dependencies import ensure_auth_configuration
 from api.routes.actions import router as actions_router
+from api.routes.rag import router as rag_router
 from api.routes.sessions import router as sessions_router
 from api.routes.sse import router as sse_router
 from api.routes.system import router as system_router
@@ -70,6 +71,7 @@ app.include_router(system_router)
 app.include_router(sessions_router)
 app.include_router(actions_router)
 app.include_router(sse_router)
+app.include_router(rag_router)
 
 
 if __name__ == "__main__":

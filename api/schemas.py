@@ -54,3 +54,26 @@ class SSEChatRequest(BaseModel):
     messages: List[Dict[str, Any]] = Field(default_factory=list)
     params: Dict[str, Any] = Field(default_factory=dict)
     request_id: Optional[str] = None
+
+
+class RAGQueryRequest(BaseModel):
+    query: str
+    top_k: int = 6
+    hybrid: bool = True
+    rerank: bool = True
+    score_threshold: float = 0.18
+
+
+class RAGCitation(BaseModel):
+    index: int
+    chunk_id: str
+    source: str
+    score: float
+
+
+class RAGRetrieveResponse(BaseModel):
+    query: str
+    context: str
+    citations: List[RAGCitation] = Field(default_factory=list)
+    should_answer: bool = True
+    reason: Optional[str] = None
