@@ -13,7 +13,7 @@ from api.routes.actions import router as actions_router
 from api.routes.sessions import router as sessions_router
 from api.routes.sse import router as sse_router
 from api.routes.system import router as system_router
-from api.runtime import executor, limiter
+from api.runtime import app_state, limiter
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
 logging.getLogger("uvicorn.access").disabled = True
@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
     ensure_auth_configuration()
     yield
     logger.info("🛑 Server shutting down...")
-    executor.shutdown(wait=True)
+    app_state.shutdown()
 
 
 app = FastAPI(title="LLM WebUI API", version="1.1.0", lifespan=lifespan)
