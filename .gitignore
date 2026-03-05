@@ -12,4 +12,6 @@ temp/
 .DS_Store
 node_modules/
 venv/
+upload_to_github.py
+git-upload-config.json
 env/
