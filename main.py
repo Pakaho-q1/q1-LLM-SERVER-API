@@ -27,9 +27,10 @@ from managers.model_manager import ModelManager
 
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.WARNING,
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
+logging.getLogger("uvicorn.access").disabled = True
 logger = logging.getLogger(__name__)
 
 
@@ -765,4 +766,4 @@ async def handle_get_model_status(client_id: str) -> None:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning", access_log=False)

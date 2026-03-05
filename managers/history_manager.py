@@ -75,6 +75,7 @@ class HistoryManager:
             CREATE TABLE IF NOT EXISTS sessions (
                 id         TEXT PRIMARY KEY,
                 title      TEXT,
+                summary    TEXT DEFAULT '',  -- เพิ่มบรรทัดนี้เพื่อเก็บสรุปแชทเก่าๆ
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             )
@@ -184,6 +185,65 @@ class HistoryManager:
         if self.tokenizer:
             return self.tokenizer(text)
         return max(1, len(text) // 4)
+
+    def update_rolling_summary(self, conv_id: str):
+        """
+        ฟังก์ชันสำหรับบีบอัดประวัติการสนทนาที่เก่าแล้วให้กลายเป็นข้อความสรุปสั้นๆ (Rolling Summary)
+        เพื่อประหยัด Token และรักษาบริบทภาพรวมไว้
+        """
+        conn = self._get_conn()
+
+        session = conn.execute(
+            "SELECT summary FROM sessions WHERE id=?", (conv_id,)
+        ).fetchone()
+        current_summary = session["summary"] if session and session["summary"] else ""
+
+        messages = conn.execute(
+            """
+            SELECT id, role, content FROM messages 
+            WHERE conv_id=? AND is_archived=0 
+            ORDER BY created_at ASC
+            """,
+            (conv_id,),
+        ).fetchall()
+
+        if len(messages) <= 10:
+            return
+
+        messages_to_summarize = messages[:-6]
+        ids_to_archive = [msg["id"] for msg in messages_to_summarize]
+
+        chat_log = "\n".join(
+            [f"{m['role'].capitalize()}: {m['content']}" for m in messages_to_summarize]
+        )
+
+        summary_prompt = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant that summarizes conversations concisely.",
+            },
+            {
+                "role": "user",
+                "content": f"Here is the current summary of the conversation:\n{current_summary}\n\nHere are the new messages:\n{chat_log}\n\nPlease provide an updated, concise summary of the entire conversation. Retain key facts, context, and the user's main goals. Do not output anything else but the summary.",
+            },
+        ]
+
+        new_summary = self.engine.generate_json(summary_prompt, {"max_tokens": 250})
+
+        if new_summary and isinstance(new_summary, str):
+            conn.execute(
+                "UPDATE sessions SET summary=?, updated_at=? WHERE id=?",
+                (new_summary.strip(), time.time(), conv_id),
+            )
+
+            placeholders = ",".join("?" for _ in ids_to_archive)
+            conn.execute(
+                f"UPDATE messages SET is_archived=1 WHERE id IN ({placeholders})",
+                ids_to_archive,
+            )
+
+            conn.commit()
+            logger.info(f"Updated rolling summary for conversation: {conv_id}")
 
     @staticmethod
     def _content_hash(text: str) -> str:
@@ -699,17 +759,29 @@ class HistoryManager:
         print(f"     -> 🔄 Retrieved History: {len(working)} messages")
         print("=" * 50 + "\n")
 
+        conn = self._get_conn()
+        session = conn.execute(
+            "SELECT summary FROM sessions WHERE id=?", (conv_id,)
+        ).fetchone()
+        chat_summary = session["summary"] if session and session["summary"] else ""
+
         context: List[Dict[str, Any]] = []
+
+        if chat_summary:
+            context.append(
+                {
+                    "role": "system",
+                    "content": f"(Conversation Summary So Far)\n{chat_summary}",
+                }
+            )
 
         if filtered_ltm:
             lines = [f"[{m['time_label']}] {m['content']}" for m in filtered_ltm]
             context.append(
                 {
                     "role": "system",
-                    "content": (
-                        "(Ordered oldest→newest. The LAST entry is the most current belief.)\n"
-                        + "\n".join(lines)
-                    ),
+                    "content": "(Ordered oldest→newest. The LAST entry is the most current belief.)\n"
+                    + "\n".join(lines),
                 }
             )
 

@@ -36,8 +36,6 @@ class LLMEngine:
             if not os.path.exists(model_path):
                 return False, f"❌ File not found: {model_path}"
 
-            logger.info(f"Loading model: {model_path}")
-
             self.n_ctx = int(params.get("n_ctx", 4096))
 
             try:

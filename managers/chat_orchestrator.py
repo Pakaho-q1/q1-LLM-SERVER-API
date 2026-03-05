@@ -140,12 +140,6 @@ class ChatOrchestrator:
                     conv_id, user_input, params, status_cb
                 )
 
-            print("\n" + "=" * 40)
-            print("🚀 ข้อความที่ส่งเข้าโมเดล (MESSAGES PAYLOAD):")
-            for i, msg in enumerate(messages):
-                print(f"[{i}] {msg['role'].upper()}: {msg['content']}")
-            print("=" * 40 + "\n")
-
             await status_cb("Generating response...")
             full_text = ""
             parameters = params.get("parameters", params)
@@ -187,8 +181,11 @@ class ChatOrchestrator:
                 {"role": "user", "content": user_input},
                 {"role": "assistant", "content": clean_text},
             ]
+
             if self.history.should_store_long_term(interaction):
                 self.executor.submit(self.history.save_to_memory, interaction, conv_id)
+
+            self.executor.submit(self.history.update_rolling_summary, conv_id)
 
         except Exception as e:
 
