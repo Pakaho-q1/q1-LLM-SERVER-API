@@ -186,10 +186,9 @@ class HistoryManager:
             return self.tokenizer(text)
         return max(1, len(text) // 4)
 
-    def update_rolling_summary(self, conv_id: str):
+    def update_rolling_summary(self, conv_id: str, threshold_tokens: int = 5000):
         """
-        ฟังก์ชันสำหรับบีบอัดประวัติการสนทนาที่เก่าแล้วให้กลายเป็นข้อความสรุปสั้นๆ (Rolling Summary)
-        เพื่อประหยัด Token และรักษาบริบทภาพรวมไว้
+        อัปเดตสรุปประวัติแชทเมื่อ Token ดิบเกินกำหนด (เช่น 5000 Token)
         """
         conn = self._get_conn()
 
@@ -200,50 +199,121 @@ class HistoryManager:
 
         messages = conn.execute(
             """
-            SELECT id, role, content FROM messages 
+            SELECT id, role, content, tokens FROM messages 
             WHERE conv_id=? AND is_archived=0 
             ORDER BY created_at ASC
             """,
             (conv_id,),
         ).fetchall()
 
-        if len(messages) <= 10:
+        if not messages:
             return
 
-        messages_to_summarize = messages[:-6]
+        total_tokens = sum(
+            m["tokens"] or self._count_tokens(m["content"]) for m in messages
+        )
+
+        if total_tokens < threshold_tokens:
+            return
+
+        keep_tokens_limit = 1500
+        kept_tokens = 0
+        keep_count = 0
+
+        for m in reversed(messages):
+            tok = m["tokens"] or self._count_tokens(m["content"])
+            if kept_tokens + tok > keep_tokens_limit:
+                break
+            kept_tokens += tok
+            keep_count += 1
+
+        if keep_count < 2:
+            keep_count = 2
+
+        messages_to_summarize = messages[:-keep_count]
+        if not messages_to_summarize:
+            return
+
         ids_to_archive = [msg["id"] for msg in messages_to_summarize]
 
         chat_log = "\n".join(
-            [f"{m['role'].capitalize()}: {m['content']}" for m in messages_to_summarize]
+            [
+                f"{m['role'].capitalize()}: {self._clean_text(m['content'])}"
+                for m in messages_to_summarize
+            ]
         )
 
         summary_prompt = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant that summarizes conversations concisely.",
+                "content": """You compress chat history into a minimal, highly dense factual summary.
+
+                Rules:
+                - Keep ONLY core facts, user preferences, and key decisions.
+                - COMPLETELY REMOVE assistant's explanations, greetings, and storytelling.
+                - Use short, concise statements or keywords.
+                - Do NOT repeat information already in the Current Summary.
+                - Write the summary in the exact same language predominantly used by the user in the New messages.
+                - Target length: As short as possible (< 120 tokens).
+
+                Respond ONLY in valid JSON format:
+                {"summary": "..."}""",
             },
             {
                 "role": "user",
-                "content": f"Here is the current summary of the conversation:\n{current_summary}\n\nHere are the new messages:\n{chat_log}\n\nPlease provide an updated, concise summary of the entire conversation. Retain key facts, context, and the user's main goals. Do not output anything else but the summary.",
+                "content": f"""Current summary:
+                {current_summary}
+
+                New messages:
+                {chat_log}
+
+                Generate the updated summary JSON:""",
             },
         ]
 
-        new_summary = self.engine.generate_json(summary_prompt, {"max_tokens": 250})
+        raw_summary = self.engine.generate_json(summary_prompt, {"max_tokens": 500})
+
+        new_summary = ""
+        import json
+
+        try:
+
+            parsed_json = json.loads(raw_summary)
+
+            new_summary = parsed_json.get("summary", "")
+        except json.JSONDecodeError:
+
+            import re
+
+            match = re.search(r'"summary"\s*:\s*"(.*)', raw_summary, re.DOTALL)
+            if match:
+                new_summary = match.group(1).rstrip('"}')
+            else:
+                new_summary = raw_summary
 
         if new_summary and isinstance(new_summary, str):
             conn.execute(
                 "UPDATE sessions SET summary=?, updated_at=? WHERE id=?",
                 (new_summary.strip(), time.time(), conv_id),
             )
-
             placeholders = ",".join("?" for _ in ids_to_archive)
             conn.execute(
                 f"UPDATE messages SET is_archived=1 WHERE id IN ({placeholders})",
                 ids_to_archive,
             )
-
             conn.commit()
-            logger.info(f"Updated rolling summary for conversation: {conv_id}")
+            logger.info(
+                f"Updated rolling summary for conversation: {conv_id}. Compressed {len(messages_to_summarize)} messages."
+            )
+
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        """ลบบรรทัดว่างที่ติดกันหลายบรรทัด และตัดช่องว่างหัวท้ายทิ้ง"""
+        if not text:
+            return ""
+
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        return "\n".join(lines)
 
     @staticmethod
     def _content_hash(text: str) -> str:
@@ -371,11 +441,7 @@ class HistoryManager:
         return [dict(r) for r in rows]
 
     def get_working_memory(self, conv_id: str, max_tokens: int) -> List[Dict[str, Any]]:
-        """
-        Pair-based greedy-fill:
-        ดึงประวัติการแชทจากใหม่ไปเก่า โดยบังคับดึงเป็นคู่ (User + Assistant) เสมอ
-        เพื่อป้องกันปัญหาคำถามกำพร้า (Orphaned Prompt) ที่ทำให้ AI เหมาตอบคำถามเก่า
-        """
+
         rows = (
             self._get_conn()
             .execute(
@@ -410,20 +476,24 @@ class HistoryManager:
                     if token_count + pair_tokens <= max_tokens:
 
                         selected.append(
-                            {"role": msg["role"], "content": msg["content"]}
+                            {
+                                "role": msg["role"],
+                                "content": self._clean_text(msg["content"]),
+                            }
                         )
                         selected.append(
-                            {"role": user_msg["role"], "content": user_msg["content"]}
+                            {
+                                "role": user_msg["role"],
+                                "content": self._clean_text(user_msg["content"]),
+                            }
                         )
                         token_count += pair_tokens
                         i += 2
                     else:
                         break
                 else:
-
                     i += 1
             elif msg["role"] == "user":
-
                 i += 1
             else:
                 i += 1

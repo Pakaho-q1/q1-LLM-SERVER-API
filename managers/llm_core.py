@@ -68,8 +68,6 @@ class LLMEngine:
             if "rope_freq_scale" in params:
                 llm_kwargs["rope_freq_scale"] = float(params["rope_freq_scale"])
 
-            logger.info(f"LLM params: {llm_kwargs}")
-
             self.llm = Llama(**llm_kwargs)
 
             self.model_path = model_path
@@ -177,8 +175,6 @@ class LLMEngine:
         call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
         for unsupported_key in ["penalty_last_n"]:
             call_kwargs.pop(unsupported_key, None)
-
-        logger.info(f"Calling create_chat_completion with: {call_kwargs}")
 
         try:
             stream = self.llm.create_chat_completion(**call_kwargs)
