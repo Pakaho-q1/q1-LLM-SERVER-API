@@ -5,7 +5,7 @@ import json
 import uuid
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 from contextlib import asynccontextmanager
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -58,6 +58,12 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 API_KEY = os.environ.get("LLM_API_KEY", "")
+REQUIRE_API_KEY = os.environ.get("LLM_REQUIRE_API_KEY", "true").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
@@ -83,6 +89,64 @@ class ModelInfo(BaseModel):
     path: str
     size: int
     loaded: bool = False
+
+
+ActionType = Literal[
+    "list_sessions",
+    "list_models",
+    "load_model",
+    "unload_model",
+    "delete_model",
+    "fetch_hf",
+    "download_model",
+    "cancel_download",
+    "download_status",
+    "count_tokens",
+    "get_model_status",
+    "list_presets",
+    "get_preset",
+    "create_preset",
+    "update_preset",
+    "delete_preset",
+    "create_session",
+    "rename_session",
+    "delete_session",
+    "get_chat_history",
+]
+
+
+class SessionCreateRequest(BaseModel):
+    title: str = "New Chat"
+
+
+class ApiActionRequest(BaseModel):
+    client_id: str
+    action: ActionType
+    conversation_id: Optional[str] = None
+    title: Optional[str] = None
+    model_path: Optional[str] = None
+    filename: Optional[str] = None
+    repo: Optional[str] = None
+    url: Optional[str] = None
+    job_id: Optional[str] = None
+    text: Optional[str] = None
+    preset_id: Optional[str] = None
+    name: Optional[str] = None
+    preset: Optional[Dict[str, Any]] = None
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SSEChatRequest(BaseModel):
+    client_id: str
+    conversation_id: str = "default_conv"
+    content: Optional[str] = None
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    params: Dict[str, Any] = Field(default_factory=dict)
+    request_id: Optional[str] = None
+
+
+def safe_error_detail(message: str = "Internal server error") -> str:
+    return message
 
 
 async def sse_broadcast(message: Dict[str, Any]) -> None:
@@ -112,6 +176,11 @@ async def sse_send_to_client(client_id: str, message: Dict[str, Any]) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Server starting...")
+    if REQUIRE_API_KEY and not API_KEY:
+        raise RuntimeError(
+            "LLM_API_KEY is required when LLM_REQUIRE_API_KEY=true. "
+            "Set LLM_API_KEY or explicitly disable with LLM_REQUIRE_API_KEY=false."
+        )
     yield
     logger.info("🛑 Server shutting down...")
     executor.shutdown(wait=True)
@@ -172,8 +241,8 @@ async def list_sessions():
 
 
 @app.post("/sessions", dependencies=[Depends(verify_api_key)])
-async def create_session(payload: Dict[str, Any]):
-    title = payload.get("title", "New Chat")
+async def create_session(payload: SessionCreateRequest):
+    title = payload.title
     loop = asyncio.get_running_loop()
     new_session = await loop.run_in_executor(
         executor, history_manager.create_session, title
@@ -191,12 +260,11 @@ async def get_history(conversation_id: str):
 
 
 @app.post("/api/action", dependencies=[Depends(verify_api_key)])
-async def api_action(payload: Dict[str, Any]):
+async def api_action(payload: ApiActionRequest):
     """Generic REST proxy for non-chat actions."""
-    client_id = payload.get("client_id")
-    action = payload.get("action")
-    if not client_id or not action:
-        raise HTTPException(status_code=400, detail="client_id and action required")
+    client_id = payload.client_id
+    action = payload.action
+    payload_data = payload.model_dump()
 
     try:
         loop = asyncio.get_running_loop()
@@ -214,28 +282,28 @@ async def api_action(payload: Dict[str, Any]):
             await handle_list_models(client_id)
             return {"status": "ok"}
         if action == "load_model":
-            await handle_load_model(client_id, payload)
+            await handle_load_model(client_id, payload_data)
             return {"status": "ok"}
         if action == "unload_model":
             await handle_unload_model(client_id)
             return {"status": "ok"}
         if action == "delete_model":
-            await handle_delete_model(client_id, payload)
+            await handle_delete_model(client_id, payload_data)
             return {"status": "ok"}
         if action == "fetch_hf":
-            await handle_fetch_hf(client_id, payload)
+            await handle_fetch_hf(client_id, payload_data)
             return {"status": "ok"}
         if action == "download_model":
-            await handle_download_model(client_id, payload)
+            await handle_download_model(client_id, payload_data)
             return {"status": "ok"}
         if action == "cancel_download":
-            await handle_cancel_download(client_id, payload)
+            await handle_cancel_download(client_id, payload_data)
             return {"status": "ok"}
         if action == "download_status":
             await handle_download_status(client_id)
             return {"status": "ok"}
         if action == "count_tokens":
-            await handle_count_tokens(client_id, payload)
+            await handle_count_tokens(client_id, payload_data)
             return {"status": "ok"}
         if action == "get_model_status":
             await handle_get_model_status(client_id)
@@ -245,20 +313,20 @@ async def api_action(payload: Dict[str, Any]):
             await handle_list_presets(client_id)
             return {"status": "ok"}
         if action == "get_preset":
-            await handle_get_preset(client_id, payload)
+            await handle_get_preset(client_id, payload_data)
             return {"status": "ok"}
         if action == "create_preset":
-            await handle_create_preset(client_id, payload)
+            await handle_create_preset(client_id, payload_data)
             return {"status": "ok"}
         if action == "update_preset":
-            await handle_update_preset(client_id, payload)
+            await handle_update_preset(client_id, payload_data)
             return {"status": "ok"}
         if action == "delete_preset":
-            await handle_delete_preset(client_id, payload)
+            await handle_delete_preset(client_id, payload_data)
             return {"status": "ok"}
 
         if action == "create_session":
-            title = payload.get("title", "New Chat")
+            title = payload.title or "New Chat"
             new_session = await loop.run_in_executor(
                 executor, history_manager.create_session, title
             )
@@ -268,8 +336,8 @@ async def api_action(payload: Dict[str, Any]):
             return {"data": new_session}
 
         if action == "rename_session":
-            conv_id = payload.get("conversation_id")
-            title = payload.get("title")
+            conv_id = payload.conversation_id
+            title = payload.title
             await loop.run_in_executor(
                 executor, history_manager.rename_session, conv_id, title
             )
@@ -286,7 +354,7 @@ async def api_action(payload: Dict[str, Any]):
             return {"status": "ok"}
 
         if action == "delete_session":
-            conv_id = payload.get("conversation_id")
+            conv_id = payload.conversation_id
             await loop.run_in_executor(
                 executor, history_manager.delete_session, conv_id
             )
@@ -302,7 +370,7 @@ async def api_action(payload: Dict[str, Any]):
             return {"status": "ok"}
 
         if action == "get_chat_history":
-            conv_id = payload.get("conversation_id")
+            conv_id = payload.conversation_id
             messages = await loop.run_in_executor(
                 executor, history_manager.get_chat_history, conv_id
             )
@@ -316,9 +384,9 @@ async def api_action(payload: Dict[str, Any]):
 
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("API action error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_detail())
 
 
 @app.get("/sse/stream", dependencies=[Depends(verify_api_key)])
@@ -369,18 +437,15 @@ async def sse_stream(request: Request, client_id: str):
 
 @app.post("/sse/chat", dependencies=[Depends(verify_api_key)])
 @limiter.limit("30/minute")
-async def sse_chat_endpoint(request: Request, payload: Dict[str, Any]):
+async def sse_chat_endpoint(request: Request, payload: SSEChatRequest):
     """Receive chat requests and stream results into client's SSE queue."""
-    client_id = payload.get("client_id")
-    if not client_id:
-        raise HTTPException(status_code=400, detail="client_id is required")
-
-    conv_id = payload.get("conversation_id", "default_conv")
-    messages = payload.get("messages") or []
-    user_input = payload.get("content") or (
+    client_id = payload.client_id
+    conv_id = payload.conversation_id
+    messages = payload.messages or []
+    user_input = payload.content or (
         messages[-1].get("content") if messages else ""
     )
-    params = payload.get("params", {}) or {}
+    params = payload.params or {}
 
     if not user_input:
         raise HTTPException(status_code=400, detail="content is required")
@@ -404,7 +469,7 @@ async def sse_chat_endpoint(request: Request, payload: Dict[str, Any]):
     if not q:
         raise HTTPException(status_code=404, detail="SSE client not connected")
 
-    request_id = payload.get("request_id") or str(uuid.uuid4())
+    request_id = payload.request_id or str(uuid.uuid4())
     chat_id = f"chatcmpl-{uuid.uuid4()}"
     created = int(time.time())
 
@@ -517,7 +582,10 @@ async def handle_load_model(client_id: str, data: Dict[str, Any]) -> None:
         if not model_name:
             raise ValueError("model_path is required")
         params = data.get("params", {})
-        full_model_path = str(Path(model_manager.models_dir) / model_name)
+        safe_model_path = model_manager.resolve_model_path(model_name)
+        if safe_model_path is None:
+            raise ValueError("invalid model_path")
+        full_model_path = str(safe_model_path)
 
         await sse_send_to_client(
             client_id, {"type": "status", "message": f"Loading: {model_name}..."}

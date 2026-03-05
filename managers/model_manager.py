@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 
 
 class DownloadManager:
@@ -130,6 +131,21 @@ class ModelManager:
         self.download_manager = DownloadManager(self.models_dir)
         print(f"📁 Model Directory is set to: {self.models_dir.resolve()}")
 
+    def resolve_model_path(self, filename: str) -> Optional[Path]:
+        """Resolve model filename to a safe path under models_dir."""
+        if not filename:
+            return None
+
+        candidate = (self.models_dir / filename).resolve()
+        models_root = self.models_dir.resolve()
+
+        try:
+            candidate.relative_to(models_root)
+        except ValueError:
+            return None
+
+        return candidate
+
     def list_models(self):
         files = [f for f in self.models_dir.iterdir() if f.suffix.lower() == ".gguf"]
         result = []
@@ -194,7 +210,10 @@ class ModelManager:
 
     def delete_model(self, filename):
         try:
-            (self.models_dir / filename).unlink()
+            safe_path = self.resolve_model_path(filename)
+            if safe_path is None or not safe_path.exists() or not safe_path.is_file():
+                return False
+            safe_path.unlink()
             return True
         except:
             return False
