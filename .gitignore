@@ -1,0 +1,15 @@
+__pycache__/
+backup/
+data/
+git_upload/
+models/
+*.log
+temp/
+*.bat
+.env
+.git/
+*.pyc
+.DS_Store
+node_modules/
+venv/
+env/
